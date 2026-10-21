@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SeqLens — DNA sequence analysis in your browser</title>
+<meta name="description" content="Paste a DNA sequence or FASTA file to get GC content, reverse complement, translation, six-frame ORFs and k-mer counts. Runs entirely in your browser.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* Palette: the four Sanger chromatogram trace colors (A green, C blue, G black, T red)
+     on a cool slide-glass background. */
+  :root {
+    --bg: #eef2f3;
+    --panel: #ffffff;
+    --ink: #17202b;
+    --muted: #5d6b78;
+    --rule: #d3dbe0;
+    --a: #1f9d55;
+    --c: #2463c9;
+    --g: #17202b;
+    --t: #d23a3a;
+    --n: #9aa6b0;
+    --focus: #2463c9;
+    --gc-line: #2463c9;
+    --orf-fwd: #1f9d55;
+    --orf-rev: #d23a3a;
+    --sel: #f2b84b;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #10161c;
+      --panel: #18212a;
+      --ink: #e6ecf0;
+      --muted: #94a3b0;
+      --rule: #2b3843;
+      --a: #3ccf7a;
+      --c: #5b95ff;
+      --g: #e6ecf0;
+      --t: #ff6b6b;
+      --n: #6c7a86;
+      --focus: #5b95ff;
+      --gc-line: #5b95ff;
+      --orf-fwd: #3ccf7a;
+      --orf-rev: #ff6b6b;
+      --sel: #f2b84b;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 400 16px/1.55 var(--sans);
+  }
+  a { color: var(--c); }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px; }
+
+  /* Header: the wordmark is spelled in chromatogram colors, one per base it resembles. */
+  header.wrap { padding-top: 40px; padding-bottom: 24px; }
+  .mark {
+    font: 700 clamp(40px, 7vw, 64px)/1 var(--sans);
+    letter-spacing: -0.03em;
+    margin: 0;
+  }
+  .mark span:nth-child(4n+1) { color: var(--a); }
+  .mark span:nth-child(4n+2) { color: var(--c); }
+  .mark span:nth-child(4n+3) { color: var(--g); }
+  .mark span:nth-child(4n+4) { color: var(--t); }
+  .lede { margin: 12px 0 0; max-width: 60ch; color: var(--muted); font-size: 18px; }
+  .lede a { color: inherit; }
+
+  /* Input */
+  .input {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .input label { font-weight: 600; display: block; margin-bottom: 8px; }
+  textarea {
+    width: 100%;
+    min-height: 150px;
+    resize: vertical;
+    font: 400 13px/1.5 var(--mono);
+    color: var(--ink);
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 10px 12px;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+  button, .filebtn {
+    font: 600 14px/1 var(--sans);
+    border-radius: 6px;
+    padding: 10px 14px;
+    cursor: pointer;
+    border: 1px solid var(--rule);
+    background: var(--panel);
+    color: var(--ink);
+  }
+  button.primary { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+  .filebtn input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  .filebtn:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .hint { color: var(--muted); font-size: 14px; }
+  .msg { margin: 12px 0 0; padding: 10px 12px; border-radius: 6px; font-size: 14px; }
+  .msg.error { background: color-mix(in srgb, var(--t) 12%, transparent); color: var(--t); }
+  .msg.warn { background: color-mix(in srgb, var(--sel) 22%, transparent); }
+
+  /* Results */
+  #results { margin: 28px 0 56px; }
+  .rechead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 14px; }
+  .rechead h2 { margin: 0; font-size: 24px; letter-spacing: -0.01em; }
+  .rechead .desc { color: var(--muted); }
+  select, input[type=number] {
+    font: 500 14px var(--sans);
+    color: var(--ink);
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 7px 8px;
+  }
+
+  /* Composition bar: one stacked bar, each base its chromatogram color. */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; }
+  .stat { background: var(--panel); padding: 12px 14px; }
+  .stat dt { color: var(--muted); font-size: 13px; }
+  .stat dd { margin: 2px 0 0; font: 600 22px/1.2 var(--sans); font-variant-numeric: tabular-nums; }
+  .comp { display: flex; height: 10px; border-radius: 5px; overflow: hidden; margin: 14px 0 6px; background: var(--rule); }
+  .comp i { display: block; height: 100%; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--muted); }
+  .legend b { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+
+  /* Sequence map */
+  .map { margin-top: 22px; background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 14px 8px; }
+  .map h3, .panel h3 { margin: 0 0 4px; font-size: 17px; }
+  .map p { margin: 0 0 8px; color: var(--muted); font-size: 14px; }
+  .map .scroll { overflow-x: auto; }
+  .map svg { width: 100%; height: auto; display: block; }
+  .map .orf { cursor: pointer; }
+  .map .orf:focus { outline: none; }
+  .map .orf:focus path, .map .orf.active path { stroke: var(--sel); stroke-width: 3; }
+  .map text { font: 500 11px var(--sans); fill: var(--muted); }
+
+  /* Tabs */
+  .tabs { margin-top: 22px; }
+  [role=tablist] { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--rule); }
+  [role=tab] {
+    border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+    background: none; padding: 10px 12px; color: var(--muted); font-weight: 600;
+  }
+  [role=tab][aria-selected=true] { color: var(--ink); border-bottom-color: var(--ink); }
+  .panel { background: var(--panel); border: 1px solid var(--rule); border-top: 0; border-radius: 0 0 10px 10px; padding: 16px; }
+  .panel[hidden] { display: none; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 12px; font-size: 14px; }
+
+  pre.seq {
+    margin: 0; padding: 12px; max-height: 340px; overflow: auto;
+    background: var(--bg); border-radius: 6px;
+    font: 400 13px/1.6 var(--mono); white-space: pre-wrap; word-break: break-all;
+  }
+  .seq .A { color: var(--a); } .seq .C { color: var(--c); }
+  .seq .G { color: var(--g); } .seq .T, .seq .U { color: var(--t); }
+  .seq .stop { background: var(--t); color: var(--panel); border-radius: 2px; }
+  .seq .met { color: var(--a); font-weight: 600; }
+
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; }
+  td.num, th.num { text-align: right; }
+  td.prot { font-family: var(--mono); font-size: 12px; max-width: 420px; overflow: hidden; text-overflow: ellipsis; }
+  tr.active td { background: color-mix(in srgb, var(--sel) 22%, transparent); }
+  tbody tr { cursor: pointer; }
+  .strand-plus { color: var(--orf-fwd); font-weight: 700; }
+  .strand-minus { color: var(--orf-rev); font-weight: 700; }
+  .kbar { height: 8px; background: var(--c); border-radius: 4px; min-width: 2px; }
+  .empty { color: var(--muted); padding: 8px 0; }
+
+  footer.wrap { padding-top: 20px; padding-bottom: 40px; color: var(--muted); font-size: 14px; }
+  footer.wrap p { margin: 0; padding-top: 20px; border-top: 1px solid var(--rule); }
+
+  @media (max-width: 640px) {
+    header.wrap { padding-top: 28px; padding-bottom: 18px; }
+    .map svg { min-width: 680px; }
+    .lede { font-size: 16px; }
+    .stat dd { font-size: 19px; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+</head>
+<body>
+<header class="wrap">
+  <h1 class="mark" aria-label="SeqLens"><span>S</span><span>e</span><span>q</span><span>L</span><span>e</span><span>n</span><span>s</span></h1>
+  <p class="lede">Paste a DNA sequence or open a FASTA file to see its composition, reading frames and open reading frames. Everything runs in your browser; nothing is uploaded. Also available as a <a href="https://github.com/junxi13627-dev/seqlens">Java command-line tool</a>.</p>
+</header>
+
+<main class="wrap">
+  <section class="input" aria-label="Sequence input">
+    <label for="seqInput">Sequence or FASTA</label>
+    <textarea id="seqInput" spellcheck="false" autocomplete="off" placeholder=">my_gene&#10;ATGGCCATTGTAATGGGCCGCTGA..."></textarea>
+    <div class="row">
+      <button class="primary" id="analyzeBtn" type="button">Analyze</button>
+      <label class="filebtn">Open FASTA file<input type="file" id="fileInput" accept=".fa,.fasta,.fna,.ffn,.txt,text/plain"></label>
+      <button id="sampleBtn" type="button">Load sample</button>
+      <button id="clearBtn" type="button">Clear</button>
+      <span class="hint">A sequence without a &gt; header is analyzed as a single record.</span>
+    </div>
+    <div id="msg" role="status" aria-live="polite"></div>
+  </section>
+
+  <section id="results" hidden aria-live="polite"></section>
+</main>
+
+<footer class="wrap">
+  <p>SeqLens by Junxi Song. MIT License. <a href="https://github.com/junxi13627-dev/seqlens">Source on GitHub</a></p>
+</footer>
+
+<script>
+/* ------------------------------------------------------------------
+   Core analysis. Mirrors the Java implementation in src/main/java.
+   ------------------------------------------------------------------ */
+const SeqLens = (() => {
+  const BASES = "TCAG";
+  const AMINO = "FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG";
+  const CODONS = {};
+  let i = 0;
+  for (const a of BASES) for (const b of BASES) for (const c of BASES) CODONS[a + b + c] = AMINO[i++];
+
+  const COMP = { A: "T", T: "A", U: "A", G: "C", C: "G", R: "Y", Y: "R", K: "M", M: "K",
+                 B: "V", V: "B", D: "H", H: "D", S: "S", W: "W" };
+
+  function parseFasta(text) {
+    const records = [];
+    let header = null, seq = [];
+    const lines = text.split(/\r?\n/);
+    const hasHeader = lines.some(l => l.trim().startsWith(">"));
+    if (!hasHeader) {
+      const raw = lines.filter(l => !l.trim().startsWith(";")).join("").replace(/\s+/g, "");
+      return raw ? [{ id: "input", description: "", sequence: raw.toUpperCase() }] : [];
+    }
+    const flush = () => {
+      const parts = header.split(/\s+/);
+      const id = parts[0] || "unnamed";
+      const description = header.slice(parts[0].length).trim();
+      records.push({ id, description, sequence: seq.join("").toUpperCase() });
+    };
+    lines.forEach((raw, idx) => {
+      const line = raw.trim();
+      if (!line || line.startsWith(";")) return;
+      if (line.startsWith(">")) {
+        if (header !== null) flush();
+        header = line.slice(1).trim();
+        seq = [];
+      } else {
+        if (header === null) throw new Error(`Line ${idx + 1}: sequence data found before the first ">" header.`);
+        seq.push(line.replace(/\s+/g, ""));
+      }
+    });
+    if (header !== null) flush();
+    return records;
+  }
+
+  function invalidChars(seq) {
+    return [...new Set(seq.replace(/[ACGTUNRYSWKMBDHV]/g, ""))];
+  }
+
+  function baseCounts(seq) {
+    const c = { A: 0, C: 0, G: 0, T: 0, N: 0 };
+    for (const ch of seq) c["ACGT".includes(ch) ? ch : "N"]++;
+    return c;
+  }
+
+  function gcContent(seq) {
+    let gc = 0, total = 0;
+    for (const ch of seq) {
+      if (ch === "G" || ch === "C") { gc++; total++; }
+      else if (ch === "A" || ch === "T") total++;
+    }
+    return total === 0 ? 0 : gc / total;
+  }
+
+  function meltingTemperature(seq) {
+    const c = baseCounts(seq);
+    const n = c.A + c.T + c.G + c.C;
+    if (n === 0) return 0;
+    if (n < 14) return 2 * (c.A + c.T) + 4 * (c.G + c.C);
+    return 64.9 + 41 * (c.G + c.C - 16.4) / n;
+  }
+
+  const reverseComplement = seq => [...seq].reverse().map(b => COMP[b] || "N").join("");
+  const transcribe = seq => seq.replace(/T/g, "U");
+  const translateCodon = codon => CODONS[codon.replace(/U/g, "T")] || "X";
+
+  function translate(seq, frame = 0) {
+    let p = "";
+    for (let i = frame; i + 3 <= seq.length; i += 3) p += translateCodon(seq.slice(i, i + 3));
+    return p;
+  }
+
+  function scan(s, frame, minLen, sink) {
+    let i = frame;
+    while (i + 3 <= s.length) {
+      if (s.startsWith("ATG", i)) {
+        let protein = "", j = i, closed = false;
+        while (j + 3 <= s.length) {
+          const aa = translateCodon(s.slice(j, j + 3));
+          j += 3;
+          if (aa === "*") { closed = true; break; }
+          protein += aa;
+        }
+        if (!closed) return;
+        if (protein.length >= minLen) sink(i, j, protein);
+        i = j;
+      } else {
+        i += 3;
+      }
+    }
+  }
+
+  function findOrfs(seq, minLen) {
+    const rev = reverseComplement(seq), n = seq.length, orfs = [];
+    for (let f = 0; f < 3; f++) {
+      scan(seq, f, minLen, (s, e, p) => orfs.push({ strand: "+", frame: f + 1, start: s + 1, end: e, protein: p }));
+      scan(rev, f, minLen, (s, e, p) => orfs.push({ strand: "-", frame: f + 1, start: n - e + 1, end: n - s, protein: p }));
+    }
+    const len = o => o.end - o.start + 1;
+    return orfs.sort((x, y) => len(y) - len(x) || x.start - y.start);
+  }
+
+  function kmerCounts(seq, k) {
+    const counts = new Map();
+    for (let i = 0; i + k <= seq.length; i++) {
+      const kmer = seq.slice(i, i + k);
+      if (/^[ACGT]+$/.test(kmer)) counts.set(kmer, (counts.get(kmer) || 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  }
+
+  function gcWindows(seq, win) {
+    const pts = [];
+    if (seq.length < win) return pts;
+    const step = Math.max(1, Math.floor(win / 4));
+    for (let i = 0; i + win <= seq.length; i += step) {
+      pts.push({ mid: i + win / 2, gc: gcContent(seq.slice(i, i + win)) });
+    }
+    return pts;
+  }
+
+  return { parseFasta, invalidChars, baseCounts, gcContent, meltingTemperature, reverseComplement,
+           transcribe, translateCodon, translate, findOrfs, kmerCounts, gcWindows };
+})();
+
+if (typeof module !== "undefined") module.exports = SeqLens;
+
+/* ------------------------------------------------------------------
+   Interface
+   ------------------------------------------------------------------ */
+if (typeof document !== "undefined") (() => {
+  const SAMPLE = `>contig_1 synthetic contig with one forward and one reverse ORF
+GACAGGTACAAGAAGGAGTATGCATCAATGTGGTCGTGTGGAACAAACGCCACTGGAGAC
+TGGGTTAACCATTCGCTCCAGCGTCATGAAAGTCACTGTTAGGGCGACCTTCGATTCGGA
+ATGGTGGAAGTTGAAAAACATAACTGTTCTTCACAGAATTCTTTAACCCTCACAGTGGTG
+ACTCTAGACCAATCTCGCATAGAAGTAATACATTTTGCTCGGCTTACTATCCCAGATATG
+ATCACAGCGATCTGGTCGACAATGGGAATCAGATTAGAGCTAGTTTATAGTACCCGGCGC
+CTAGTAGGCTTTACGCGACCATCGATTAGTCGTCGCCAAATTTGTCGTTCGGACAATTTT
+TCATTGTGTTCCAGGCTCTAAACACTCTCCTTGGACTGGGAGGTATAAGGAATAGGCGGT
+AGACGCCTACTTAACTTTCATGGTGATCGTAAAGCGGAGCCTTACCATGCGTTAGTTGAT
+GTACTGTAGATAGATCGAAGACGTGTATTGATACGAGTAACATGGTACGTTAGAATACAA
+CGAACAGCTGGCTCGAGAAACCGTAATTATGCACGAGTAGCACTGAGTGCTATCTGAGTC
+CCAAGATGTTTTCCGGTCCATACTTCGCTGTATATCACGCGGCGCGATGGGGCAGCCTGC
+CCCCACTGTGCGACCGGCCAC
+>gc_rich_region synthetic high-GC fragment
+TGCAGGCGGGCCACCTACGCGCCGAGGACCTGACTCGGTGTTGGGGGTGCCCGGGGCACC
+CGACGGACGCCCTGGTGCACGTTCGGGCCCACGCCCAGACGAGACACCCGCGGCAAGTCG
+GGGTCAAAGGCGGCGGAGTAACGTCGAGGAGTGATGCCCGCTGATGGGCGTCGGCCGCTG
+ATCCGCATCCGCTGCATAGCGGGCGACGCGCGCGCGCCACAGGCCCGTGCACCCAGCTGG
+ATCTGCCCATCGCAGAAGCTAGGGCGCCTTCGGGTCCGACAACGCCGGCGTGGGTCGGTG
+ACCGGCAGGTGCAACCCATGGTTGCAGCGTCGGCACCGTCGCTGGCCCTCGTGGCCCGGG
+CGTCGATGCAGGATTCAGCGGCGTCGCTGTTCGCTGGCCG
+>fragment_with_gap synthetic fragment containing an N gap
+TCAGCGGCCAGGATAGGTCGTTCAGGTTCGATGCGTGTACGCGCTAGCCTATTGCCAGGG
+GCTTCCTCCTCGCCTCATGGTGTGTCTAAGACAGCGTGTTTTGTCCGGACGGCGTCTCGT
+GGGTGGAAGTACCACCCGTAAAGGTAATGATACAAATTTACAGGCANNNNNNNNNNTACC
+AGGTATTAGTTAGCTATGCGGTTTTGTGACGTAATAAGTGTTATCTTAATATTTTTTCTA
+GCTTGTTAAATGTAAT`;
+
+  const $ = id => document.getElementById(id);
+  const input = $("seqInput"), results = $("results"), msg = $("msg");
+  const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const fmt = (n, d = 0) => n.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+
+  let records = [], current = 0;
+  const state = { frame: 0, minAa: 30, k: 3, top: 15, tab: "orfs", activeOrf: null };
+
+  function show(kind, text) {
+    msg.innerHTML = text ? `<p class="msg ${kind}">${esc(text)}</p>` : "";
+  }
+
+  function analyze() {
+    show("", "");
+    try {
+      records = SeqLens.parseFasta(input.value);
+    } catch (e) {
+      results.hidden = true;
+      return show("error", e.message);
+    }
+    if (!records.length) {
+      results.hidden = true;
+      return show("error", "No sequence found. Paste DNA (A, C, G, T) or a FASTA file, or load the sample.");
+    }
+    const bad = [...new Set(records.flatMap(r => SeqLens.invalidChars(r.sequence)))];
+    if (bad.length) show("warn", `Characters that aren't nucleotide codes (${bad.slice(0, 8).join(", ")}) are counted as N and translate to X. Is this a protein sequence?`);
+    current = 0;
+    state.activeOrf = null;
+    render();
+  }
+
+  function colorSeq(seq) {
+    return seq.replace(/[ACGTU]+|[^ACGTU]+/g, m => /[ACGTU]/.test(m[0])
+      ? [...m].map(b => `<span class="${b}">${b}</span>`).join("") : esc(m));
+  }
+  const wrap60 = s => s.match(/.{1,60}/g)?.join("\n") || "";
+  function colorProtein(p) {
+    return esc(wrap60(p)).replace(/\*/g, '<span class="stop">*</span>').replace(/M/g, '<span class="met">M</span>');
+  }
+
+  function mapSvg(r, orfs) {
+    const L = r.sequence.length, W = 1000, pad = 44, padR = 16;
+    const x = pos => pad + (pos / Math.max(L, 1)) * (W - pad - padR);
+    const lanesNeeded = list => {
+      const lanes = [];
+      return list.map(o => {
+        let lane = lanes.findIndex(end => end < o.start);
+        if (lane === -1) { lane = lanes.length; lanes.push(0); }
+        lanes[lane] = o.end;
+        return { o, lane };
+      });
+    };
+    const fwd = lanesNeeded(orfs.filter(o => o.strand === "+").sort((a, b) => a.start - b.start));
+    const rev = lanesNeeded(orfs.filter(o => o.strand === "-").sort((a, b) => a.start - b.start));
+    const laneH = 16, nF = Math.max(1, ...fwd.map(f => f.lane + 1)), nR = Math.max(1, ...rev.map(f => f.lane + 1));
+    const gcTop = 8, gcH = 60, axisY = gcTop + gcH + 36 + nF * laneH;
+    const H = axisY + 10 + nR * laneH + 26;
+
+    const win = Math.max(20, Math.round(L / 60));
+    const pts = SeqLens.gcWindows(r.sequence, win);
+    const gy = g => gcTop + gcH - g * gcH;
+    const gcPath = pts.map((p, i) => `${i ? "L" : "M"}${x(p.mid).toFixed(1)},${gy(p.gc).toFixed(1)}`).join("");
+
+    const arrow = (o, y, dir) => {
+      const x1 = x(o.start - 1), x2 = x(o.end), h = 11, head = Math.min(8, (x2 - x1) * 0.4);
+      const d = dir > 0
+        ? `M${x1},${y} H${x2 - head} L${x2},${y + h / 2} L${x2 - head},${y + h} H${x1} Z`
+        : `M${x2},${y} H${x1 + head} L${x1},${y + h / 2} L${x1 + head},${y + h} H${x2} Z`;
+      const id = orfId(o);
+      const label = `${o.strand} strand, frame ${o.frame}, ${o.start} to ${o.end}, ${o.protein.length} amino acids`;
+      return `<g class="orf${state.activeOrf === id ? " active" : ""}" data-orf="${id}" tabindex="0" role="button" aria-label="${label}">
+        <title>${label}</title><path d="${d}" fill="${dir > 0 ? "var(--orf-fwd)" : "var(--orf-rev)"}" fill-opacity=".85"/></g>`;
+    };
+
+    const ticks = [];
+    const step = niceStep(L);
+    for (let p = 0; p <= L; p += step) {
+      ticks.push(`<line x1="${x(p)}" x2="${x(p)}" y1="${axisY}" y2="${axisY + 5}" stroke="var(--muted)"/>
+        <text x="${x(p)}" y="${axisY - 6}" text-anchor="middle">${p.toLocaleString("en-US")}</text>`);
+    }
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Map of ${esc(r.id)}: GC content along the sequence and open reading frames on both strands">
+      <line x1="${pad}" x2="${W - padR}" y1="${gy(0.5)}" y2="${gy(0.5)}" stroke="var(--rule)" stroke-dasharray="4 4"/>
+      <text x="${pad - 6}" y="${gy(0.5) + 4}" text-anchor="end">50%</text>
+      <text x="${pad - 6}" y="${gcTop + 8}" text-anchor="end">GC</text>
+      ${gcPath ? `<path d="${gcPath}" fill="none" stroke="var(--gc-line)" stroke-width="1.8"/>` : ""}
+      <text x="${pad}" y="${gcTop + gcH + 14}">+ strand</text>
+      ${fwd.map(f => arrow(f.o, gcTop + gcH + 20 + (nF - 1 - f.lane) * laneH, 1)).join("")}
+      <line x1="${pad}" x2="${W - padR}" y1="${axisY}" y2="${axisY}" stroke="var(--ink)" stroke-width="2"/>
+      ${ticks.join("")}
+      ${rev.map(f => arrow(f.o, axisY + 10 + f.lane * laneH, -1)).join("")}
+      <text x="${pad}" y="${H - 6}">− strand</text>
+    </svg>`;
+  }
+  function niceStep(L) {
+    const raw = Math.max(1, L / 8), p = 10 ** Math.floor(Math.log10(raw));
+    return [1, 2, 5, 10].map(m => m * p).find(s => s >= raw);
+  }
+  const orfId = o => `${o.strand}${o.frame}:${o.start}-${o.end}`;
+
+  function render() {
+    const r = records[current], s = r.sequence;
+    const c = SeqLens.baseCounts(s), L = s.length || 1;
+    const orfs = SeqLens.findOrfs(s, state.minAa);
+    const pick = records.length > 1
+      ? `<label>Record <select id="recSel">${records.map((x, i) => `<option value="${i}"${i === current ? " selected" : ""}>${esc(x.id)}</option>`).join("")}</select></label>`
+      : "";
+
+    results.innerHTML = `
+      <div class="rechead"><h2>${esc(r.id)}</h2><span class="desc">${esc(r.description)}</span>${pick}</div>
+      <dl class="stats">
+        <div class="stat"><dt>Length</dt><dd>${fmt(s.length)} bp</dd></div>
+        <div class="stat"><dt>GC content</dt><dd>${fmt(SeqLens.gcContent(s) * 100, 2)}%</dd></div>
+        <div class="stat"><dt>Melting temp. (est.)</dt><dd>${fmt(SeqLens.meltingTemperature(s), 1)} °C</dd></div>
+        <div class="stat"><dt>ORFs ≥ ${state.minAa} aa</dt><dd>${orfs.length}</dd></div>
+      </dl>
+      <div class="comp" aria-hidden="true">${["A", "C", "G", "T", "N"].map(b => `<i style="width:${(c[b] / L) * 100}%;background:var(--${b.toLowerCase()})"></i>`).join("")}</div>
+      <div class="legend">${["A", "C", "G", "T", "N"].map(b => `<span><b style="background:var(--${b.toLowerCase()})"></b>${b} ${fmt(c[b])} (${fmt((c[b] / L) * 100, 1)}%)</span>`).join("")}</div>
+
+      <div class="map">
+        <h3>Sequence map</h3>
+        <p>GC content in a sliding window of ${Math.max(20, Math.round(s.length / 60))} bp, with ORFs on the forward (+) and reverse (−) strands. Select an ORF to see it in the table.</p>
+        <div class="scroll">${mapSvg(r, orfs)}</div>
+      </div>
+
+      <div class="tabs">
+        <div role="tablist" aria-label="Analyses">
+          ${[["orfs", "ORFs"], ["translate", "Translation"], ["revcomp", "Reverse complement"], ["transcribe", "mRNA"], ["kmers", "k-mers"]]
+            .map(([id, name]) => `<button role="tab" id="tab-${id}" aria-controls="panel-${id}" aria-selected="${state.tab === id}" tabindex="${state.tab === id ? 0 : -1}">${name}</button>`).join("")}
+        </div>
+        ${panel("orfs", orfsPanel(orfs))}
+        ${panel("translate", translatePanel(s))}
+        ${panel("revcomp", seqPanel(SeqLens.reverseComplement(s), "Reverse complement, read 5′ to 3′."))}
+        ${panel("transcribe", seqPanel(SeqLens.transcribe(s), "mRNA from the coding strand (T replaced by U)."))}
+        ${panel("kmers", kmersPanel(s))}
+      </div>`;
+    results.hidden = false;
+  }
+
+  const panel = (id, body) =>
+    `<div class="panel" role="tabpanel" id="panel-${id}" aria-labelledby="tab-${id}"${state.tab === id ? "" : " hidden"}>${body}</div>`;
+
+  function orfsPanel(orfs) {
+    const rows = orfs.map(o => {
+      const id = orfId(o);
+      return `<tr data-orf="${id}"${state.activeOrf === id ? ' class="active"' : ""}>
+        <td class="${o.strand === "+" ? "strand-plus" : "strand-minus"}">${o.strand}</td><td class="num">${o.frame}</td>
+        <td class="num">${fmt(o.start)}</td><td class="num">${fmt(o.end)}</td><td class="num">${fmt(o.protein.length)}</td>
+        <td class="prot" title="${o.protein}">${o.protein}</td></tr>`;
+    }).join("");
+    const active = orfs.find(o => orfId(o) === state.activeOrf);
+    return `<div class="controls">
+        <label>Minimum length <input type="number" id="minAa" min="0" max="10000" value="${state.minAa}" style="width:6em"> amino acids</label>
+        <span class="hint">Positions are 1-based on the forward strand and include the stop codon.</span>
+      </div>
+      ${orfs.length ? `<div class="tablewrap"><table>
+        <thead><tr><th>Strand</th><th class="num">Frame</th><th class="num">Start</th><th class="num">End</th><th class="num">Length (aa)</th><th>Protein</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>` : `<p class="empty">No ORFs of at least ${state.minAa} amino acids. Try a lower minimum length.</p>`}
+      ${active ? `<h3 style="margin-top:16px">Protein from ${active.strand} strand, ${fmt(active.start)}–${fmt(active.end)}</h3>
+        <pre class="seq">${colorProtein(active.protein + "*")}</pre>
+        <div class="row"><button type="button" data-copy="${active.protein}">Copy protein</button></div>` : ""}`;
+  }
+
+  function translatePanel(s) {
+    const p = SeqLens.translate(s, state.frame);
+    return `<div class="controls">
+        <label>Reading frame <select id="frameSel">${[0, 1, 2].map(f => `<option value="${f}"${f === state.frame ? " selected" : ""}>${f + 1}</option>`).join("")}</select></label>
+        <span class="hint">Standard genetic code. Stops are marked *, ambiguous codons X.</span>
+      </div>
+      <pre class="seq">${colorProtein(p) || "Sequence is shorter than one codon."}</pre>
+      <div class="row"><button type="button" data-copy="${p}">Copy protein</button></div>`;
+  }
+
+  function seqPanel(seq, note) {
+    return `<p class="hint" style="margin-top:0">${note}</p>
+      <pre class="seq">${colorSeq(wrap60(seq))}</pre>
+      <div class="row"><button type="button" data-copy="${seq}">Copy sequence</button></div>`;
+  }
+
+  function kmersPanel(s) {
+    const all = SeqLens.kmerCounts(s, state.k), top = all.slice(0, state.top);
+    const max = top.length ? top[0][1] : 1;
+    return `<div class="controls">
+        <label>k <input type="number" id="kIn" min="1" max="12" value="${state.k}" style="width:4.5em"></label>
+        <label>Show top <input type="number" id="topIn" min="1" max="200" value="${state.top}" style="width:5em"></label>
+        <span class="hint">${fmt(all.length)} distinct ${state.k}-mers of ${fmt(4 ** state.k)} possible.</span>
+      </div>
+      ${top.length ? `<div class="tablewrap"><table><thead><tr><th>k-mer</th><th class="num">Count</th><th style="width:50%"></th></tr></thead><tbody>
+        ${top.map(([k, n]) => `<tr><td style="font-family:var(--mono)">${colorSeq(k)}</td><td class="num">${fmt(n)}</td>
+          <td><div class="kbar" style="width:${(n / max) * 100}%"></div></td></tr>`).join("")}
+      </tbody></table></div>` : `<p class="empty">The sequence is shorter than k.</p>`}`;
+  }
+
+  /* Events */
+  $("analyzeBtn").addEventListener("click", analyze);
+  $("sampleBtn").addEventListener("click", () => { input.value = SAMPLE; analyze(); });
+  $("clearBtn").addEventListener("click", () => { input.value = ""; results.hidden = true; show("", ""); input.focus(); });
+  input.addEventListener("keydown", e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) analyze(); });
+  $("fileInput").addEventListener("change", e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 20 * 1024 * 1024) return show("error", "That file is over 20 MB. Open a smaller FASTA file, or use the command-line tool for large genomes.");
+    file.text().then(t => { input.value = t; analyze(); e.target.value = ""; });
+  });
+
+  const clampNum = (el, lo, hi, fallback) => {
+    const v = parseInt(el.value, 10);
+    return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : fallback;
+  };
+
+  results.addEventListener("change", e => {
+    const t = e.target;
+    if (t.id === "recSel") { current = +t.value; state.activeOrf = null; }
+    else if (t.id === "frameSel") state.frame = +t.value;
+    else if (t.id === "minAa") { state.minAa = clampNum(t, 0, 10000, 30); state.activeOrf = null; }
+    else if (t.id === "kIn") state.k = clampNum(t, 1, 12, 3);
+    else if (t.id === "topIn") state.top = clampNum(t, 1, 200, 15);
+    else return;
+    const focusId = t.id;
+    render();
+    $(focusId)?.focus();
+  });
+
+  function selectOrf(id) {
+    state.activeOrf = state.activeOrf === id ? null : id;
+    state.tab = "orfs";
+    render();
+    const row = results.querySelector(`tr[data-orf="${id}"]`);
+    if (row && state.activeOrf) row.scrollIntoView({ block: "nearest" });
+  }
+
+  results.addEventListener("click", e => {
+    const tab = e.target.closest("[role=tab]");
+    if (tab) { state.tab = tab.id.slice(4); render(); $(tab.id).focus(); return; }
+    const orf = e.target.closest("[data-orf]");
+    if (orf) return selectOrf(orf.dataset.orf);
+    const copy = e.target.closest("[data-copy]");
+    if (copy) {
+      navigator.clipboard?.writeText(copy.dataset.copy).then(() => {
+        const old = copy.textContent;
+        copy.textContent = "Copied";
+        setTimeout(() => (copy.textContent = old), 1200);
+      });
+    }
+  });
+
+  results.addEventListener("keydown", e => {
+    const tab = e.target.closest("[role=tab]");
+    if (tab && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
+      const tabs = [...results.querySelectorAll("[role=tab]")];
+      const next = tabs[(tabs.indexOf(tab) + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+      state.tab = next.id.slice(4); render(); $(next.id).focus();
+      return;
+    }
+    const orf = e.target.closest(".orf");
+    if (orf && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); selectOrf(orf.dataset.orf); }
+  });
+
+  input.value = SAMPLE;
+  analyze();
+})();
+</script>
+</body>
+</html>

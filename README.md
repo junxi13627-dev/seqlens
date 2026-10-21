@@ -4,6 +4,8 @@
 ![Java](https://img.shields.io/badge/Java-17%2B-orange)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
+**▶ [Try it online](https://junxi13627-dev.github.io/seqlens/)** — paste a sequence or open a FASTA file; no installation needed.
+
 **SeqLens** is a lightweight, dependency-free command-line toolkit for DNA and protein sequence analysis, written in pure Java.
 
 It reads standard FASTA files and covers the everyday tasks of a molecular biology workflow: sequence statistics, reverse complements, transcription, translation, open reading frame (ORF) discovery and k-mer profiling.
@@ -102,6 +104,7 @@ seqlens/
 │   └── Orf.java           # ORF result record
 ├── src/test/java/...      # JUnit 5 tests
 ├── examples/sample.fasta  # synthetic demo sequences
+├── docs/index.html        # web version (GitHub Pages)
 └── .github/workflows/     # CI: build + test on every push
 ```
 
